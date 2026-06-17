@@ -17,9 +17,10 @@ import {
   VerificationException,
   type JWSTransactionDecodedPayload,
 } from '@apple/app-store-server-library'
-import { createHash, createPrivateKey, sign as signJwt } from 'node:crypto'
+import { createPrivateKey, sign as signJwt } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { ScanRequest, SheetDetection } from './types.js'
+import { appAccountTokenMatchesBoard } from './iap/premiumBoardToken.js'
 
 if (!getApps().length) initializeApp()
 
@@ -102,18 +103,6 @@ function appleSecret(value: string, label: string) {
     throw new HttpsError('failed-precondition', `${label} is not configured`)
   }
   return value
-}
-
-function appAccountTokenForBoard(boardId: string) {
-  const hash = createHash('sha256')
-    .update(`winking-star-board:${boardId}`)
-    .digest('hex')
-    .slice(0, 32)
-    .split('')
-  hash[12] = '5'
-  hash[16] = ((parseInt(hash[16] || '0', 16) & 0x3) | 0x8).toString(16)
-  const value = hash.join('')
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`
 }
 
 function createAppStoreServerJwt() {
@@ -283,10 +272,11 @@ export const verifyPremiumUnlock = onCall<
     if (transaction.revocationDate) {
       throw new HttpsError('failed-precondition', 'purchase has been revoked')
     }
-    if (
-      transaction.appAccountToken &&
-      transaction.appAccountToken.toLowerCase() !== appAccountTokenForBoard(data.boardId)
-    ) {
+    // Authoritative binding: the purchase must carry an appAccountToken (from
+    // Apple's signed transaction) that resolves to THIS board. Token-absent or
+    // wrong-board transactions are refused, so a purchase can never unlock a
+    // board it was not made for.
+    if (!appAccountTokenMatchesBoard(transaction.appAccountToken, data.boardId)) {
       throw new HttpsError('permission-denied', 'purchase is linked to another family board')
     }
 
